@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>EdgeWhiteboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+
+        // --- TWOJA KONFIGURACJA FIREBASE ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyCKGJ98l_DpxP_zy6ubwHNvWxxcKkzmjbE",
+            authDomain: "edgewhiteboard.firebaseapp.com",
+            projectId: "edgewhiteboard",
+            storageBucket: "edgewhiteboard.firebasestorage.app",
+            messagingSenderId: "1:126179781853:web:ebcfd8f1bb6f9317a7bf34",
+            appId: "G-4RJZB12W66"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        // Funkcja zapisu do chmury
+        window.saveToCloud = async (tabsData, activeId) => {
+            if (!auth.currentUser) return;
+            const userRef = doc(db, "users", auth.currentUser.uid);
+            try {
+                await setDoc(userRef, { 
+                    tabs: tabsData, 
+                    activeId: activeId,
+                    lastSync: Date.now() 
+                }, { merge: true });
+                console.log("Zsynchronizowano z chmurą");
+            } catch (e) { console.error("Błąd synchronizacji:", e); }
+        };
+
+        // Automatyczne logowanie i nasłuchiwanie zmian
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                const userRef = doc(db, "users", user.uid);
+                onSnapshot(userRef, (doc) => {
+                    if (doc.exists() && !window.isDrawingCloud) {
+                        window.loadRemoteTabs(doc.data());
+                    }
+                });
+            } else {
+                signInAnonymously(auth);
+            }
+        });
+    </script>
+
+    <style>
+        :root { 
+            --bg: #0d0d12; --panel: rgba(30, 30, 45, 0.95); --accent: #7aa2f7; --text: #c0caf5; 
+            --danger: #f7768e; --canvas-bg: #1a1b26; --grid: rgba(255,255,255,0.05);
+        }
+        body.light-mode { 
+            --bg: #f0f2f5; --panel: rgba(255, 255, 255, 0.95); --accent: #3d59a1; --text: #24283b; 
+            --canvas-bg: #ffffff; --grid: rgba(0,0,0,0.08);
+        }
+        body { margin: 0; display: flex; flex-direction: column; height: 100vh; font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
+        
+        #tabs-bar { background: rgba(0,0,0,0.2); display: flex; padding: 12px 15px 0; gap: 5px; border-bottom: 1px solid rgba(255,255,255,0.1); align-items: flex-end; z-index: 1001; backdrop-filter: blur(10px); }
+        .tab { background: rgba(255,255,255,0.05); padding: 8px 16px; border-radius: 10px 10px 0 0; cursor: pointer; border: 1px solid rgba(255,255,255,0.1); border-bottom: none; font-size: 13px; display: flex; align-items: center; gap: 8px; transition: 0.2s; }
+        .tab.active { background: var(--panel); color: var(--accent); border-top: 3px solid var(--accent); padding-bottom: 10px; }
+
+        #toolbar-left, #toolbar-right { position: absolute; top: 85px; background: var(--panel); border-radius: 18px; border: 1px solid rgba(255,255,255,0.1); display: flex; flex-direction: column; padding: 10px; gap: 8px; z-index: 1000; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        #toolbar-left { left: 15px; width: 48px; }
+        #toolbar-right { right: 15px; width: 52px; align-items: center; }
+        
+        button { width: 40px; height: 40px; border-radius: 10px; border: none; background: transparent; color: var(--text); cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; transition: 0.2s; }
+        button:hover { background: rgba(255,255,255,0.1); }
+        button.active { background: var(--accent); color: white; box-shadow: 0 0 15px rgba(122, 162, 247, 0.4); }
+
+        #workspace { position: relative; flex-grow: 1; background: var(--canvas-bg); }
+        canvas { position: absolute; top: 0; left: 0; outline: none; }
+        
+        #ruler { 
+            position: absolute; width: 500px; height: 50px; background: rgba(255, 230, 50, 0.25); 
+            border: 1px solid rgba(237, 198, 0, 0.8); border-radius: 2px; z-index: 1500; display: none; cursor: move;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.4); backdrop-filter: blur(4px); transform-origin: center;
+        }
+        #ruler::after { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 15px; background: repeating-linear-gradient(90deg, #edc600 0, #edc600 2px, transparent 2px, transparent 10px); }
+        #ruler-deg { position: absolute; bottom: 5px; left: 50%; transform: translateX(-50%); font-weight: bold; background: #1a1b26; color: #edc600; padding: 1px 6px; border-radius: 6px; font-size: 10px; pointer-events: none; }
+
+        #shapeMenu { position: absolute; left: 75px; top: 230px; background: var(--panel); border: 1px solid var(--accent); border-radius: 12px; display: none; flex-direction: column; padding: 5px; gap: 5px; z-index: 2000; }
+        .v-slider { appearance: slider-vertical; width: 6px; height: 100px; cursor: pointer; }
+        #cloud-status { position: fixed; bottom: 10px; left: 10px; font-size: 10px; opacity: 0.3; pointer-events: none; }
+    </style>
+</head>
+<body>
+
+<div id="tabs-bar">
+    <div id="tabs-container" style="display: flex; gap: 5px;"></div>
+    <button onclick="addTab()" style="background:var(--accent); color:white; width:26px; height:26px; border-radius:8px; margin-bottom:8px;">+</button>
+</div>
+
+<div id="toolbar-left">
+    <button onclick="undo()">↩️</button>
+    <button onclick="redo()">↻</button>
+    <hr style="width:70%; opacity:0.1">
+    <button id="drawBtn" class="active" onclick="setMode('draw')">✏️</button>
+    <button id="highlighterBtn" onclick="setMode('highlighter')">🖍️</button>
+    <button id="eraseBtn" onclick="setMode('erase')">🧽</button>
+    <button id="moveBtn" onclick="setMode('move')">🖱️</button>
+    <button onclick="toggleShapes()">➕</button>
+    <button id="textBtn" onclick="setMode('text')">🔤</button>
+    <button onclick="clearCanvas()" style="color:var(--danger)">🗑️</button>
+</div>
+
+<div id="toolbar-right">
+    <button onclick="toggleTheme()">🌗</button>
+    <input type="color" id="colorPicker" value="#7aa2f7" style="width:30px; height:30px; border:none; background:none; cursor:pointer;">
+    <input type="range" id="lineWidth" min="1" max="100" value="5" class="v-slider" orient="vertical">
+    <button id="rulerBtn" onclick="toggleRuler()">📏</button>
+    <select id="bgSelect" onchange="updateBg()" style="width:45px; background:rgba(0,0,0,0.2); color:white; border:none; font-size:10px; border-radius:4px;">
+        <option value="grid">Kr</option>
+        <option value="lines">Lin</option>
+        <option value="none">Gł</option>
+    </select>
+    <button onclick="exportPNG()">💾</button>
+</div>
+
+<div id="shapeMenu">
+    <button onclick="selectShape('rect')">⬜</button>
+    <button onclick="selectShape('circle')">⭕</button>
+    <button onclick="selectShape('triangle')">📐</button>
+    <button onclick="selectShape('arrow')">⬇️</button>
+    <button onclick="selectShape('star')">⭐</button>
+</div>
+
+<div id="workspace">
+    <div id="ruler"><div id="ruler-deg">0°</div></div>
+    <canvas id="bgCanvas"></canvas>
+    <canvas id="mainCanvas"></canvas>
+    <canvas id="uiCanvas"></canvas>
+</div>
+
+<div id="cloud-status">Cloud Sync Ready</div>
+
+<script>
+    const mainCanvas = document.getElementById('mainCanvas'), ctx = mainCanvas.getContext('2d');
+    const uiCanvas = document.getElementById('uiCanvas'), uictx = uiCanvas.getContext('2d');
+    const bgCanvas = document.getElementById('bgCanvas'), bctx = bgCanvas.getContext('2d');
+    const ruler = document.getElementById('ruler');
+
+    let mode = 'draw', drawing = false, rulerActive = false, rAngle = 0;
+    let sX, sY, history = [], redoStack = [], elements = [], activeEl = null, scaling = false;
+    
+    // Inicjalizacja z localStorage, ale Firebase to nadpisze
+    let tabs = JSON.parse(localStorage.getItem('gem_v38')) || [{ id: 1, name: "Projekt 1", bg: 'grid', data: null, els: [] }];
+    let activeId = tabs[0].id;
+
+    window.isDrawingCloud = false; // Zapobiega migotaniu przy synchronizacji
+
+    function init() {
+        const res = () => {
+            const w = document.getElementById('workspace').clientWidth;
+            const h = document.getElementById('workspace').clientHeight;
+            [mainCanvas, uiCanvas, bgCanvas].forEach(c => { c.width = w; c.height = h; });
+            drawBg(); renderUI();
+            if(tabs.find(x=>x.id===activeId).data) { loadTab(); }
+        };
+        window.onresize = res; res();
+        setupRuler();
+        window.onkeydown = (e) => { 
+            if(e.ctrlKey && e.key==='z') { e.preventDefault(); undo(); }
+            if(e.ctrlKey && e.key==='y') { e.preventDefault(); redo(); }
+        };
+        renderTabs(); setupDragDrop();
+    }
+
+    // --- RULER SNAP (TRUE EDGE) ---
+    function snapToRuler(x, y) {
+        if(!rulerActive) return {x, y};
+        const r = ruler.getBoundingClientRect(), w = document.getElementById('workspace').getBoundingClientRect();
+        const rx = r.left - w.left + r.width/2, ry = r.top - w.top + r.height/2, rad = rAngle * Math.PI / 180;
+        const dx = x - rx, dy = y - ry;
+        const rotX = dx * Math.cos(-rad) - dy * Math.sin(-rad), rotY = dx * Math.sin(-rad) + dy * Math.cos(-rad);
+        const edgeY = -25; 
+        if(Math.abs(rotY - edgeY) < 30 && Math.abs(rotX) < r.width/2) {
+            return { x: rx + rotX * Math.cos(rad) - edgeY * Math.sin(rad), y: ry + rotX * Math.sin(rad) + edgeY * Math.cos(rad) };
+        }
+        return {x, y};
+    }
+
+    uiCanvas.onmousedown = (e) => {
+        const {x, y} = snapToRuler(e.offsetX, e.offsetY); sX = x; sY = y;
+        window.isDrawingCloud = true;
+        if(mode === 'move') {
+            if(activeEl && e.offsetX > activeEl.x + activeEl.w - 15 && e.offsetY > activeEl.y + activeEl.h - 15) { scaling = true; return; }
+            activeEl = elements.findLast(el => e.offsetX > el.x && e.offsetX < el.x + el.w && e.offsetY > el.y && e.offsetY < el.y + el.h);
+            renderUI(); return;
+        }
+        if(mode === 'text') {
+            const val = prompt("Tekst:");
+            if(val) {
+                const fs = parseInt(document.getElementById('lineWidth').value) * 3 + 12;
+                elements.push({ type:'text', val, x, y, col:document.getElementById('colorPicker').value, w:val.length*(fs*0.6), h:fs });
+                save(); renderUI();
+            } return;
+        }
+        drawing = true; ctx.beginPath(); ctx.moveTo(x, y);
+    };
+
+    uiCanvas.onmousemove = (e) => {
+        const {x, y} = snapToRuler(e.offsetX, e.offsetY);
+        if(mode === 'move' && activeEl) {
+            if(scaling) { activeEl.w = Math.max(20, e.offsetX - activeEl.x); activeEl.h = Math.max(20, e.offsetY - activeEl.y); renderUI(); return; }
+            if(e.buttons === 1) { activeEl.x += e.offsetX - sX; activeEl.y += e.offsetY - sY; sX = e.offsetX; sY = e.offsetY; renderUI(); return; }
+        }
+        if(!drawing) return;
+        ctx.lineWidth = document.getElementById('lineWidth').value; ctx.strokeStyle = document.getElementById('colorPicker').value;
+        if(['draw','highlighter','erase'].includes(mode)) {
+            ctx.globalCompositeOperation = mode === 'erase' ? 'destination-out' : 'source-over';
+            ctx.globalAlpha = mode === 'highlighter' ? 0.3 : 1.0;
+            ctx.lineTo(x, y); ctx.stroke();
+        } else {
+            uictx.clearRect(0,0, uiCanvas.width, uiCanvas.height); renderUI();
+            uictx.strokeStyle = uictx.fillStyle = ctx.strokeStyle; uictx.lineWidth = ctx.lineWidth;
+            drawShape(uictx, mode, sX, sY, e.offsetX, e.offsetY);
+        }
+    };
+
+    uiCanvas.onmouseup = (e) => {
+        if(drawing && !['draw','highlighter','erase'].includes(mode)) {
+            const {x, y} = snapToRuler(e.offsetX, e.offsetY);
+            elements.push({ type:mode, x:sX, y:sY, endX:x, endY:y, w:Math.abs(x-sX), h:Math.abs(y-sY), col:ctx.strokeStyle, lw:ctx.lineWidth });
+        }
+        if(drawing || activeEl || scaling) save();
+        drawing = false; scaling = false; window.isDrawingCloud = false; 
+        ctx.globalAlpha = 1.0; uictx.clearRect(0,0, uiCanvas.width, uiCanvas.height); renderUI();
+    };
+
+    function drawShape(c, type, x, y, x2, y2) {
+        c.beginPath();
+        const w = x2 - x, h = y2 - y;
+        if(type === 'rect') c.rect(x, y, w, h);
+        else if(type === 'circle') c.arc(x+w/2, y+h/2, Math.abs(w/2), 0, Math.PI*2);
+        else if(type === 'triangle') { c.moveTo(x+w/2, y); c.lineTo(x, y+h); c.lineTo(x+w, y+h); c.closePath(); }
+        else if(type === 'arrow') {
+            const angle = Math.atan2(h, w);
+            const dist = Math.sqrt(w*w + h*h);
+            const headSize = Math.min(dist * 0.45, 45);
+            const stemW = headSize * 0.45;
+            c.save(); c.translate(x, y); c.rotate(angle);
+            c.fillRect(0, -stemW/2, Math.max(0, dist - headSize), stemW);
+            c.beginPath(); c.moveTo(dist - headSize, -headSize/1.3); c.lineTo(dist, 0); c.lineTo(dist - headSize, headSize/1.3); c.closePath(); c.fill();
+            c.restore();
+        }
+        else if(type === 'star') { for(let i=0; i<10; i++){ let r=i%2===0?Math.abs(w)/2:Math.abs(w)/5; let a=Math.PI*2*i/10-Math.PI/2; c.lineTo(x+w/2+Math.cos(a)*r, y+h/2+Math.sin(a)*r); } c.closePath(); }
+        c.stroke();
+    }
+
+    function renderUI(targetCtx = uictx, skipHandles = false) {
+        if(targetCtx === uictx) targetCtx.clearRect(0,0, uiCanvas.width, uiCanvas.height);
+        elements.forEach(el => {
+            targetCtx.strokeStyle = targetCtx.fillStyle = el.col; targetCtx.lineWidth = el.lw || 2;
+            if(el.type === 'text') { targetCtx.font = `${el.h}px Inter`; targetCtx.fillText(el.val, el.x, el.y+el.h); }
+            else if(el.type === 'img' && el.imgObj) { targetCtx.drawImage(el.imgObj, el.x, el.y, el.w, el.h); }
+            else if(el.type === 'arrow') drawShape(targetCtx, 'arrow', el.x, el.y, el.endX || el.x+el.w, el.endY || el.y+el.h);
+            else drawShape(targetCtx, el.type, el.x, el.y, el.x+el.w, el.y+el.h);
+            
+            if(activeEl === el && mode === 'move' && !skipHandles) {
+                targetCtx.strokeStyle = '#7aa2f7'; targetCtx.lineWidth = 1; targetCtx.setLineDash([5,5]);
+                targetCtx.strokeRect(el.x-4, el.y-4, el.w+8, el.h+8); targetCtx.setLineDash([]); targetCtx.fillStyle = '#7aa2f7';
+                targetCtx.fillRect(el.x + el.w - 8, el.y + el.h - 8, 12, 12);
+            }
+        });
+    }
+
+    function save() {
+        const t = tabs.find(x => x.id === activeId);
+        t.data = mainCanvas.toDataURL();
+        t.els = JSON.parse(JSON.stringify(elements.map(e=>{const {imgObj,...rest}=e; return rest;})));
+        
+        history.push({ pixels: t.data, els: t.els }); if(history.length > 50) history.shift();
+        redoStack = [];
+        
+        localStorage.setItem('gem_v38', JSON.stringify(tabs));
+        // SYNC FIREBASE
+        if(window.saveToCloud) window.saveToCloud(tabs, activeId);
+    }
+
+    // Odbiór z chmury
+    window.loadRemoteTabs = (cloudData) => {
+        tabs = cloudData.tabs;
+        activeId = cloudData.activeId;
+        loadTab();
+        document.getElementById('cloud-status').innerText = "Cloud Synced: " + new Date().toLocaleTimeString();
+    };
+
+    function undo() { if(history.length > 1) { redoStack.push(history.pop()); apply(history[history.length-1]); } }
+    function redo() { if(redoStack.length > 0) { const s = redoStack.pop(); history.push(s); apply(s); } }
+    
+    function apply(s) {
+        const img = new Image(); 
+        img.onload = () => { 
+            ctx.globalCompositeOperation = 'source-over'; 
+            ctx.clearRect(0,0, mainCanvas.width, mainCanvas.height); 
+            ctx.drawImage(img,0,0); 
+            elements = s.els.map(el => { if(el.type==='img'){el.imgObj=new Image(); el.imgObj.src=el.src;} return el; }); 
+            renderUI(); 
+        }; 
+        img.src = s.pixels;
+    }
+
+    function renderTabs() {
+        const cont = document.getElementById('tabs-container'); cont.innerHTML = '';
+        tabs.forEach(t => {
+            const d = document.createElement('div'); d.className = `tab ${t.id===activeId?'active':''}`;
+            d.innerHTML = `<span>${t.name}</span> <span onclick="delTab(${t.id}, event)">✕</span>`;
+            d.onclick = () => { activeId=t.id; loadTab(); };
+            d.ondblclick = () => { const n = prompt("Nazwa:", t.name); if(n){t.name=n; renderTabs(); save();} };
+            cont.appendChild(d);
+        });
+    }
+
+    function loadTab() {
+        const t = tabs.find(x => x.id === activeId); 
+        if(!t) return;
+        elements = t.els || [];
+        ctx.clearRect(0,0, mainCanvas.width, mainCanvas.height);
+        if(t.data) { 
+            const i = new Image(); 
+            i.onload=()=>ctx.drawImage(i,0,0); 
+            i.src = t.data; 
+        }
+        drawBg(); renderTabs(); renderUI();
+        document.getElementById('bgSelect').value = t.bg || 'grid';
+    }
+
+    function drawBg() {
+        bctx.clearRect(0,0, bgCanvas.width, bgCanvas.height);
+        const t = tabs.find(x => x.id === activeId); if(!t || t.bg === 'none') return;
+        bctx.strokeStyle = getComputedStyle(document.body).getPropertyValue('--grid');
+        for(let x=0; x<bgCanvas.width; x+=40) { bctx.beginPath(); bctx.moveTo(x,0); bctx.lineTo(x,bgCanvas.height); bctx.stroke(); if(t.bg==='lines') break; }
+        for(let y=0; y<bgCanvas.height; y+=40) { bctx.beginPath(); bctx.moveTo(0,y); bctx.lineTo(bgCanvas.width,y); bctx.stroke(); }
+    }
+
+    function setupRuler() {
+        let d = false, ox, oy;
+        ruler.onmousedown = (e) => { d=true; ox=e.clientX-ruler.offsetLeft; oy=e.clientY-ruler.offsetTop; };
+        window.onmousemove = (e) => { if(d){ ruler.style.left=(e.clientX-ox)+'px'; ruler.style.top=(e.clientY-oy)+'px'; }};
+        window.onmouseup = () => d=false;
+        ruler.onwheel = (e) => { e.preventDefault(); rAngle+=e.deltaY>0?5:-5; ruler.style.transform=`rotate(${rAngle}deg)`; document.getElementById('ruler-deg').innerText=rAngle+'°'; };
+    }
+
+    function setMode(m) { mode = m; document.querySelectorAll('button').forEach(b=>b.classList.remove('active')); document.getElementById(m+'Btn')?.classList.add('active'); renderUI(); }
+    function toggleShapes() { const m = document.getElementById('shapeMenu'); m.style.display = m.style.display==='flex'?'none':'flex'; }
+    function selectShape(s) { setMode(s); toggleShapes(); }
+    function toggleTheme() { document.body.classList.toggle('light-mode'); setTimeout(drawBg, 50); }
+    function toggleRuler() { rulerActive = !rulerActive; ruler.style.display = rulerActive?'block':'none'; document.getElementById('rulerBtn').classList.toggle('active'); }
+    function updateBg() { tabs.find(x=>x.id===activeId).bg = document.getElementById('bgSelect').value; drawBg(); save(); }
+    function addTab() { const id = Date.now(); tabs.push({ id, name: "Nowa", bg: 'grid', data: null, els: [] }); activeId=id; loadTab(); save(); }
+    function delTab(id, e) { e.stopPropagation(); if(tabs.length>1) { tabs=tabs.filter(t=>t.id!==id); activeId=tabs[0].id; loadTab(); save(); } }
+    function clearCanvas() { if(confirm("Czyścisz?")) { ctx.clearRect(0,0, mainCanvas.width, mainCanvas.height); elements=[]; renderUI(); save(); } }
+    
+    function exportPNG() {
+        const exportCanvas = document.createElement('canvas');
+        exportCanvas.width = mainCanvas.width; exportCanvas.height = mainCanvas.height;
+        const ectx = exportCanvas.getContext('2d');
+        ectx.fillStyle = getComputedStyle(document.body).getPropertyValue('--canvas-bg');
+        ectx.fillRect(0,0, exportCanvas.width, exportCanvas.height);
+        const t = tabs.find(x => x.id === activeId);
+        if(t.bg !== 'none') {
+            ectx.strokeStyle = getComputedStyle(document.body).getPropertyValue('--grid');
+            for(let x=0; x<exportCanvas.width; x+=40) { ectx.beginPath(); ectx.moveTo(x,0); ectx.lineTo(x,exportCanvas.height); ectx.stroke(); if(t.bg==='lines') break; }
+            for(let y=0; y<exportCanvas.height; y+=40) { ectx.beginPath(); ectx.moveTo(0,y); ectx.lineTo(exportCanvas.width,y); ectx.stroke(); }
+        }
+        ectx.drawImage(mainCanvas, 0, 0);
+        renderUI(ectx, true);
+        const a = document.createElement('a'); a.download = `${t.name}.png`; a.href = exportCanvas.toDataURL('image/png'); a.click();
+    }
+
+    function setupDragDrop() {
+        uiCanvas.ondrop = (e) => {
+            e.preventDefault(); const f = e.dataTransfer.files[0];
+            if(f?.type.startsWith('image/')) {
+                const r = new FileReader(); r.onload = (ev) => {
+                    const i = new Image(); i.src = ev.target.result;
+                    i.onload = () => { elements.push({ type:'img', src:ev.target.result, imgObj:i, x:100, y:100, w:i.width/2, h:i.height/2, col:'#000' }); renderUI(); save(); };
+                }; r.readAsDataURL(f);
+            }
+        }; uiCanvas.ondragover = e => e.preventDefault();
+    }
+    window.onload = init;
+</script>
+</body>
+</html>
