@@ -24,34 +24,47 @@
         const db = getFirestore(app);
         const auth = getAuth(app);
 
-        // Funkcja zapisu do chmury
-        window.saveToCloud = async (tabsData, activeId) => {
-            if (!auth.currentUser) return;
-            const userRef = doc(db, "users", "NASZA_WSPOLNA_TABLICA");
-            try {
-                await setDoc(userRef, { 
-                    tabs: tabsData, 
-                    activeId: activeId,
-                    lastSync: Date.now() 
-                }, { merge: true });
-                console.log("Zsynchronizowano z chmurą");
-            } catch (e) { console.error("Błąd synchronizacji:", e); }
-        };
+  // LOGIKA WYBORU POKOJU
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomID = urlParams.get('room'); // Sprawdza czy w linku jest ?room=...
 
-        // Automatyczne logowanie i nasłuchiwanie zmian
-        onAuthStateChanged(auth, (user) => {
-            if (user) {
-                const userRef = doc(db, "users", "NASZA_WSPOLNA_TABLICA");
-                onSnapshot(userRef, (doc) => {
-                    if (doc.exists() && !window.isDrawingCloud) {
-                        window.loadRemoteTabs(doc.data());
-                    }
-                });
-            } else {
-                signInAnonymously(auth);
-            }
-        });
-    </script>
+    const getTargetRef = (user) => {
+        if (roomID) {
+            // Jeśli jest room w linku, idź do wspólnego folderu
+            return doc(db, "shared_rooms", roomID);
+        } else {
+            // Jeśli nie ma room, idź do Twojego prywatnego folderu UID
+            return doc(db, "users", user.uid);
+        }
+    };
+
+    window.saveToCloud = async (tabsData, activeId) => {
+        if (!auth.currentUser) return;
+        const docRef = getTargetRef(auth.currentUser);
+        try {
+            await setDoc(docRef, { 
+                tabs: tabsData, 
+                activeId: activeId,
+                lastSync: Date.now() 
+            }, { merge: true });
+        } catch (e) { console.error("Błąd zapisu:", e); }
+    };
+
+    onAuthStateChanged(auth, (user) => {
+        if (user) {
+            const docRef = getTargetRef(user);
+            onSnapshot(docRef, (doc) => {
+                if (doc.exists() && !window.isDrawingCloud) {
+                    window.loadRemoteTabs(doc.data());
+                }
+            });
+            // Zaktualizuj napis statusu, żebyś wiedział gdzie jesteś
+            document.getElementById('cloud-status').innerText = roomID ? `Pokój: ${roomID}` : "Tryb Prywatny";
+        } else {
+            signInAnonymously(auth);
+        }
+    });
+</script>
 
     <style>
         :root { 
